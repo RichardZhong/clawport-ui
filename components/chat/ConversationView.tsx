@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation'
 import type { Agent } from '@/lib/types'
 import type { Conversation, ConversationStore, Message, MediaAttachment } from '@/lib/conversations'
 import { parseMedia, addMessage, updateLastMessage } from '@/lib/conversations'
-import type { ContentPart, MessageContent } from '@/lib/validation'
+import { buildApiContent } from '@/lib/multimodal'
 import { createAudioRecorder, formatDuration, blobToDataUrl, estimateStorageSize } from '@/lib/audio-recorder'
 import type { AudioRecorderHandle } from '@/lib/audio-recorder'
 import { VoiceMessage } from './VoiceMessage'
@@ -187,29 +187,6 @@ function shouldShowTimestamp(messages: Message[], index: number): boolean {
 function shouldShowAvatar(messages: Message[], index: number): boolean {
   if (index === 0) return true
   return messages[index - 1].role !== messages[index].role
-}
-
-/* ── Multimodal message builder ────────────────────────── */
-
-function buildApiContent(msg: Message): MessageContent {
-  const media = msg.media
-  if (!media || media.length === 0) return msg.content
-
-  const parts: ContentPart[] = []
-
-  if (msg.content) {
-    parts.push({ type: 'text', text: msg.content })
-  }
-
-  for (const attachment of media) {
-    if (attachment.type === 'image') {
-      parts.push({ type: 'image_url', image_url: { url: attachment.url } })
-    } else if (attachment.type === 'file') {
-      parts.push({ type: 'text', text: `[Attached file: ${attachment.name || 'unknown'}]` })
-    }
-  }
-
-  return parts.length > 0 ? parts : msg.content
 }
 
 /* ── Helper: convert File to base64 MediaAttachment ────── */
