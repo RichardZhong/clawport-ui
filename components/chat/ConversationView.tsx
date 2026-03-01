@@ -4,6 +4,11 @@ import { useRouter } from 'next/navigation'
 import type { Agent } from '@/lib/types'
 import type { Conversation, ConversationStore, Message, MediaAttachment } from '@/lib/conversations'
 import { parseMedia, addMessage, updateLastMessage } from '@/lib/conversations'
+import { createAudioRecorder, formatDuration, blobToDataUrl, estimateStorageSize } from '@/lib/audio-recorder'
+import type { AudioRecorderHandle } from '@/lib/audio-recorder'
+import { VoiceMessage } from './VoiceMessage'
+import { FileAttachment } from './FileAttachment'
+import { MediaPreview } from './MediaPreview'
 
 interface ConversationViewProps {
   agent: Agent
@@ -183,15 +188,111 @@ function shouldShowAvatar(messages: Message[], index: number): boolean {
   return messages[index - 1].role !== messages[index].role
 }
 
+/* ── Helper: convert File to base64 MediaAttachment ────── */
+
+async function fileToAttachment(file: File): Promise<MediaAttachment> {
+  const isImage = file.type.startsWith('image/')
+  const isAudio = file.type.startsWith('audio/')
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onloadend = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+  return {
+    type: isImage ? 'image' : isAudio ? 'audio' : 'file',
+    url: dataUrl,
+    name: file.name,
+    mimeType: file.type,
+    size: file.size,
+  }
+}
+
+/* ── Render media helpers ─────────────────────────────── */
+
+function renderMedia(media: MediaAttachment[], isUser: boolean) {
+  const images = media.filter(m => m.type === 'image')
+  const voiceMessages = media.filter(m => m.type === 'audio' && m.waveform && m.waveform.length > 0)
+  const plainAudio = media.filter(m => m.type === 'audio' && !(m.waveform && m.waveform.length > 0))
+  const files = media.filter(m => m.type === 'file')
+
+  return (
+    <>
+      {images.map((m, mi) => (
+        <div key={`img-${mi}`} style={{
+          marginTop: 'var(--space-2)',
+          borderRadius: 'var(--radius-lg)',
+          overflow: 'hidden',
+          maxWidth: 280,
+        }}>
+          <img
+            src={m.url}
+            alt={m.name || 'Image'}
+            style={{ width: '100%', display: 'block', borderRadius: 'var(--radius-lg)', cursor: 'pointer' }}
+            onClick={() => window.open(m.url, '_blank')}
+          />
+        </div>
+      ))}
+      {voiceMessages.map((m, mi) => (
+        <div key={`voice-${mi}`} style={{ marginTop: 'var(--space-2)' }}>
+          <VoiceMessage
+            src={m.url}
+            duration={m.duration || 0}
+            waveform={m.waveform || []}
+            isUser={isUser}
+          />
+        </div>
+      ))}
+      {plainAudio.map((m, mi) => (
+        <div key={`audio-${mi}`} style={{
+          marginTop: 'var(--space-2)',
+          background: isUser ? 'var(--accent)' : 'var(--material-thin)',
+          border: isUser ? 'none' : '1px solid var(--separator)',
+          borderRadius: 'var(--radius-lg)',
+          padding: 'var(--space-3) var(--space-4)',
+          maxWidth: 280,
+        }}>
+          <div style={{
+            fontSize: 'var(--text-caption2)',
+            color: isUser ? 'rgba(0,0,0,0.5)' : 'var(--text-tertiary)',
+            marginBottom: 'var(--space-2)',
+          }}>
+            {m.name || 'Audio'}
+          </div>
+          <audio controls src={m.url} style={{ width: '100%', height: 32 }} />
+        </div>
+      ))}
+      {files.map((m, mi) => (
+        <div key={`file-${mi}`} style={{ marginTop: 'var(--space-2)' }}>
+          <FileAttachment
+            name={m.name || 'File'}
+            size={m.size}
+            mimeType={m.mimeType}
+            url={m.url}
+            isUser={isUser}
+          />
+        </div>
+      ))}
+    </>
+  )
+}
+
 /* ── Component ──────────────────────────────────────────── */
 
 export function ConversationView({ agent, conversation, onUpdate, onBack }: ConversationViewProps) {
   const router = useRouter()
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
+  const [pendingAttachments, setPendingAttachments] = useState<MediaAttachment[]>([])
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingElapsed, setRecordingElapsed] = useState(0)
+  const [isDragOver, setIsDragOver] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const messagesAreaRef = useRef<HTMLDivElement>(null)
+  const recorderRef = useRef<AudioRecorderHandle | null>(null)
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const messages = conversation?.messages || []
   const messagesRef = useRef(messages)
@@ -201,21 +302,46 @@ export function ConversationView({ agent, conversation, onUpdate, onBack }: Conv
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  const sendMessage = useCallback(async () => {
-    if (!input.trim() || isStreaming) return
+  // Cleanup recording timer on unmount
+  useEffect(() => {
+    return () => {
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current)
+      recorderRef.current?.cancel()
+    }
+  }, [])
+
+  const sendMessage = useCallback(async (mediaOverride?: MediaAttachment[]) => {
+    const mediaToSend = mediaOverride || [...pendingAttachments]
+    const hasText = input.trim().length > 0
+    const hasMedia = mediaToSend.length > 0
+
+    if ((!hasText && !hasMedia) || isStreaming) return
+
     const text = input.trim()
     setInput('')
+    setPendingAttachments([])
 
     // Reset textarea height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
 
+    // Build content label for media-only messages
+    let content = text
+    if (!content && hasMedia) {
+      const labels = mediaToSend.map(m => {
+        if (m.type === 'audio' && m.waveform) return 'Voice message'
+        return `[${m.name || m.type}]`
+      })
+      content = labels.join(' ')
+    }
+
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: text,
+      content,
       timestamp: Date.now(),
+      media: hasMedia ? mediaToSend : undefined,
     }
 
     const assistantMsgId = crypto.randomUUID()
@@ -280,7 +406,7 @@ export function ConversationView({ agent, conversation, onUpdate, onBack }: Conv
       setIsStreaming(false)
       textareaRef.current?.focus()
     }
-  }, [input, isStreaming, agent.id, onUpdate])
+  }, [input, pendingAttachments, isStreaming, agent.id, onUpdate])
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Escape') {
@@ -294,26 +420,134 @@ export function ConversationView({ agent, conversation, onUpdate, onBack }: Conv
     }
   }
 
-  function handleFileAttach(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const url = URL.createObjectURL(file)
-    const isImage = file.type.startsWith('image/')
-    const isAudio = file.type.startsWith('audio/')
-    const media: MediaAttachment[] = [{
-      type: isImage ? 'image' : isAudio ? 'audio' : 'file',
-      url,
-      name: file.name,
-    }]
-    const msg: Message = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: isImage ? `[Attached: ${file.name}]` : `[File: ${file.name}]`,
-      timestamp: Date.now(),
-      media,
+  async function handleFileAttach(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    const newAttachments: MediaAttachment[] = []
+    for (let i = 0; i < files.length; i++) {
+      newAttachments.push(await fileToAttachment(files[i]))
     }
-    onUpdate(agent.id, prev => addMessage(prev, agent.id, msg))
+    setPendingAttachments(prev => [...prev, ...newAttachments])
     e.target.value = ''
+  }
+
+  function removePendingAttachment(index: number) {
+    setPendingAttachments(prev => prev.filter((_, i) => i !== index))
+  }
+
+  /* ── Clipboard paste handler ──────────────────────────── */
+
+  async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        e.preventDefault()
+        const file = items[i].getAsFile()
+        if (file) {
+          const att = await fileToAttachment(file)
+          setPendingAttachments(prev => [...prev, att])
+        }
+        return
+      }
+    }
+  }
+
+  /* ── Drag and drop handlers ────────────────────────────── */
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(true)
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    // Only leave if we're actually leaving the container
+    const rect = messagesAreaRef.current?.getBoundingClientRect()
+    if (rect) {
+      const { clientX, clientY } = e
+      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+        setIsDragOver(false)
+      }
+    }
+  }
+
+  async function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+
+    const files = e.dataTransfer?.files
+    if (!files || files.length === 0) return
+
+    const newAttachments: MediaAttachment[] = []
+    for (let i = 0; i < files.length; i++) {
+      newAttachments.push(await fileToAttachment(files[i]))
+    }
+    setPendingAttachments(prev => [...prev, ...newAttachments])
+  }
+
+  /* ── Voice recording (tap-to-start / tap-to-send) ──────── */
+
+  async function toggleRecording() {
+    if (isRecording) {
+      // Stop and send
+      if (elapsedTimerRef.current) {
+        clearInterval(elapsedTimerRef.current)
+        elapsedTimerRef.current = null
+      }
+      const recorder = recorderRef.current
+      if (!recorder || !recorder.isRecording()) {
+        setIsRecording(false)
+        return
+      }
+      try {
+        const result = await recorder.stop()
+        setIsRecording(false)
+        if (result.duration < 0.5) return
+        const voiceAttachment: MediaAttachment = {
+          type: 'audio',
+          url: result.dataUrl,
+          name: 'Voice message',
+          mimeType: 'audio/webm',
+          duration: result.duration,
+          waveform: result.waveform,
+          size: estimateStorageSize(result.dataUrl),
+        }
+        sendMessage([voiceAttachment])
+      } catch {
+        setIsRecording(false)
+      }
+    } else {
+      // Start recording
+      try {
+        const recorder = createAudioRecorder()
+        recorderRef.current = recorder
+        await recorder.start()
+        setIsRecording(true)
+        setRecordingElapsed(0)
+        elapsedTimerRef.current = setInterval(() => {
+          if (recorderRef.current) {
+            setRecordingElapsed(recorderRef.current.getElapsed())
+          }
+        }, 100)
+      } catch {
+        setIsRecording(false)
+      }
+    }
+  }
+
+  function cancelRecording() {
+    if (elapsedTimerRef.current) {
+      clearInterval(elapsedTimerRef.current)
+      elapsedTimerRef.current = null
+    }
+    recorderRef.current?.cancel()
+    setIsRecording(false)
   }
 
   function clearChat() {
@@ -334,6 +568,8 @@ export function ConversationView({ agent, conversation, onUpdate, onBack }: Conv
   }
 
   const hasInput = input.trim().length > 0
+  const hasContent = hasInput || pendingAttachments.length > 0
+  const showMic = !hasInput && pendingAttachments.length === 0
 
   return (
     <div style={{
@@ -467,12 +703,44 @@ export function ConversationView({ agent, conversation, onUpdate, onBack }: Conv
       </div>
 
       {/* ── Messages ──────────────────────────────── */}
-      <div style={{
-        flex: 1,
-        overflowY: 'auto',
-        background: 'var(--bg)',
-        padding: 'var(--space-5) 0 var(--space-16) 0',
-      }}>
+      <div
+        ref={messagesAreaRef}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          background: 'var(--bg)',
+          padding: 'var(--space-5) 0 var(--space-16) 0',
+          position: 'relative',
+        }}
+      >
+        {/* Drag overlay */}
+        {isDragOver && (
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'var(--accent-fill)',
+            border: '2px dashed var(--accent)',
+            borderRadius: 'var(--radius-md)',
+            margin: 'var(--space-4)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 5,
+            pointerEvents: 'none',
+          }}>
+            <div style={{
+              fontSize: 'var(--text-subheadline)',
+              fontWeight: 'var(--weight-semibold)',
+              color: 'var(--accent)',
+            }}>
+              Drop files to attach
+            </div>
+          </div>
+        )}
+
         {messages.map((msg, i) => {
           const isUser = msg.role === 'user'
           const showAvatar = shouldShowAvatar(messages, i)
@@ -489,6 +757,12 @@ export function ConversationView({ agent, conversation, onUpdate, onBack }: Conv
               textContent = textContent.replace(/!\[[^\]]*\]\([^\)]+\)/g, '')
             })
             textContent = textContent.trim()
+          }
+          // Hide auto-generated content labels for media-only messages
+          if (msg.media && msg.media.length > 0) {
+            const isAutoLabel = textContent === 'Voice message' ||
+              (textContent.startsWith('[') && textContent.endsWith(']'))
+            if (isAutoLabel) textContent = ''
           }
 
           return (
@@ -514,23 +788,31 @@ export function ConversationView({ agent, conversation, onUpdate, onBack }: Conv
               {isUser && (
                 <div style={{
                   display: 'flex',
-                  justifyContent: 'flex-end',
+                  flexDirection: 'column',
+                  alignItems: 'flex-end',
                   padding: '0 var(--space-4)',
                   marginBottom: 'var(--space-1)',
                 }}>
-                  <div className="msg-user" style={{
-                    maxWidth: '75%',
-                    padding: 'var(--space-3) var(--space-4)',
-                    borderRadius: 'var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg)',
-                    background: 'var(--accent)',
-                    color: '#000',
-                    fontSize: 'var(--text-subheadline)',
-                    lineHeight: 'var(--leading-relaxed)',
-                    fontWeight: 'var(--weight-medium)',
-                    boxShadow: 'var(--shadow-subtle)',
-                  }}>
-                    {textContent}
-                  </div>
+                  {textContent && (
+                    <div className="msg-user" style={{
+                      maxWidth: '75%',
+                      padding: 'var(--space-3) var(--space-4)',
+                      borderRadius: 'var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg)',
+                      background: 'var(--accent)',
+                      color: '#000',
+                      fontSize: 'var(--text-subheadline)',
+                      lineHeight: 'var(--leading-relaxed)',
+                      fontWeight: 'var(--weight-medium)',
+                      boxShadow: 'var(--shadow-subtle)',
+                    }}>
+                      {textContent}
+                    </div>
+                  )}
+                  {media.length > 0 && (
+                    <div style={{ maxWidth: '75%' }}>
+                      {renderMedia(media, true)}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -609,90 +891,8 @@ export function ConversationView({ agent, conversation, onUpdate, onBack }: Conv
                       </div>
                     )}
 
-                    {/* Image attachments */}
-                    {media.filter(m => m.type === 'image').map((m, mi) => (
-                      <div key={mi} style={{
-                        marginTop: 'var(--space-2)',
-                        borderRadius: 'var(--radius-lg)',
-                        overflow: 'hidden',
-                        maxWidth: 280,
-                      }}>
-                        <img
-                          src={m.url}
-                          alt={m.name || 'Image'}
-                          style={{ width: '100%', display: 'block', borderRadius: 'var(--radius-lg)', cursor: 'pointer' }}
-                          onClick={() => window.open(m.url, '_blank')}
-                        />
-                      </div>
-                    ))}
-
-                    {/* Audio attachments */}
-                    {media.filter(m => m.type === 'audio').map((m, mi) => (
-                      <div key={mi} style={{
-                        marginTop: 'var(--space-2)',
-                        background: 'var(--material-thin)',
-                        border: '1px solid var(--separator)',
-                        borderRadius: 'var(--radius-lg)',
-                        padding: 'var(--space-3) var(--space-4)',
-                        maxWidth: 280,
-                      }}>
-                        <div style={{
-                          fontSize: 'var(--text-caption2)',
-                          color: 'var(--text-tertiary)',
-                          marginBottom: 'var(--space-2)',
-                        }}>
-                          {m.name || 'Audio'}
-                        </div>
-                        <audio controls src={m.url} style={{ width: '100%', height: 32 }} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* User-side image/audio attachments */}
-              {isUser && media.length > 0 && (
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'flex-end',
-                  padding: '0 var(--space-4)',
-                  marginBottom: 'var(--space-1)',
-                }}>
-                  <div style={{ maxWidth: '75%' }}>
-                    {media.filter(m => m.type === 'image').map((m, mi) => (
-                      <div key={mi} style={{
-                        marginTop: 'var(--space-2)',
-                        borderRadius: 'var(--radius-lg)',
-                        overflow: 'hidden',
-                        maxWidth: 280,
-                      }}>
-                        <img
-                          src={m.url}
-                          alt={m.name || 'Image'}
-                          style={{ width: '100%', display: 'block', borderRadius: 'var(--radius-lg)', cursor: 'pointer' }}
-                          onClick={() => window.open(m.url, '_blank')}
-                        />
-                      </div>
-                    ))}
-                    {media.filter(m => m.type === 'audio').map((m, mi) => (
-                      <div key={mi} style={{
-                        marginTop: 'var(--space-2)',
-                        background: 'var(--material-thin)',
-                        border: '1px solid var(--separator)',
-                        borderRadius: 'var(--radius-lg)',
-                        padding: 'var(--space-3) var(--space-4)',
-                        maxWidth: 280,
-                      }}>
-                        <div style={{
-                          fontSize: 'var(--text-caption2)',
-                          color: 'var(--text-tertiary)',
-                          marginBottom: 'var(--space-2)',
-                        }}>
-                          {m.name || 'Audio'}
-                        </div>
-                        <audio controls src={m.url} style={{ width: '100%', height: 32 }} />
-                      </div>
-                    ))}
+                    {/* Media attachments */}
+                    {media.length > 0 && renderMedia(media, false)}
                   </div>
                 </div>
               )}
@@ -709,100 +909,222 @@ export function ConversationView({ agent, conversation, onUpdate, onBack }: Conv
         background: 'var(--material-regular)',
         flexShrink: 0,
       }}>
-        <div style={{
-          display: 'flex',
-          alignItems: 'flex-end',
-          gap: 'var(--space-2)',
-          background: 'var(--fill-secondary)',
-          borderRadius: 'var(--radius-lg)',
-          padding: 'var(--space-2) var(--space-3)',
-          border: '1px solid var(--separator)',
-        }}>
-          {/* Attach button */}
-          <button
-            className="btn-ghost focus-ring"
-            aria-label="Attach file"
-            onClick={() => fileInputRef.current?.click()}
-            style={{
-              padding: 'var(--space-1)',
-              flexShrink: 0,
-              borderRadius: 'var(--radius-sm)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-            </svg>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*,audio/*"
-            style={{ display: 'none' }}
-            onChange={handleFileAttach}
-          />
+        {/* Pending attachments preview */}
+        {pendingAttachments.length > 0 && (
+          <div style={{ marginBottom: 'var(--space-2)' }}>
+            <MediaPreview
+              attachments={pendingAttachments}
+              onRemove={removePendingAttachment}
+            />
+          </div>
+        )}
 
-          {/* Textarea */}
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={`Message ${agent.name}...`}
-            rows={1}
-            disabled={isStreaming}
-            style={{
-              flex: 1,
-              background: 'transparent',
-              border: 'none',
-              outline: 'none',
-              resize: 'none',
-              color: 'var(--text-primary)',
-              fontSize: 'var(--text-subheadline)',
-              lineHeight: 'var(--leading-normal)',
-              maxHeight: 120,
-              minHeight: 24,
-              padding: '2px 0',
-              opacity: isStreaming ? 0.5 : 1,
-            }}
-            onInput={e => {
-              const target = e.target as HTMLTextAreaElement
-              target.style.height = 'auto'
-              target.style.height = Math.min(target.scrollHeight, 120) + 'px'
-            }}
-          />
+        {/* Recording UI or normal input */}
+        {isRecording ? (
+          /* ── Recording mode ───────────────────────── */
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-3)',
+            background: 'var(--fill-secondary)',
+            borderRadius: 'var(--radius-lg)',
+            padding: 'var(--space-3) var(--space-4)',
+            border: '1px solid var(--separator)',
+            height: 48,
+          }}>
+            {/* Cancel button */}
+            <button
+              onClick={cancelRecording}
+              aria-label="Cancel recording"
+              style={{
+                padding: 'var(--space-1) var(--space-3)',
+                borderRadius: 'var(--radius-sm)',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 'var(--text-footnote)',
+                color: 'var(--system-red)',
+                fontWeight: 'var(--weight-medium)',
+                flexShrink: 0,
+              }}
+            >
+              Cancel
+            </button>
 
-          {/* Send button */}
-          <button
-            className="focus-ring"
-            onClick={sendMessage}
-            disabled={!hasInput || isStreaming}
-            aria-label="Send message"
-            style={{
-              width: 32,
-              height: 32,
+            {/* Pulsing red dot */}
+            <div className="animate-error-pulse" style={{
+              width: 8,
+              height: 8,
               borderRadius: '50%',
-              background: hasInput ? 'var(--accent)' : 'var(--fill-tertiary)',
-              color: hasInput ? '#000' : 'var(--text-quaternary)',
-              border: 'none',
-              cursor: hasInput ? 'pointer' : 'default',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 16,
-              fontWeight: 'var(--weight-bold)',
-              transition: 'all 150ms var(--ease-smooth)',
+              background: 'var(--system-red)',
               flexShrink: 0,
-            }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="12" y1="19" x2="12" y2="5" />
-              <polyline points="5 12 12 5 19 12" />
-            </svg>
-          </button>
-        </div>
+            }} />
+
+            {/* Timer */}
+            <span style={{
+              fontSize: 'var(--text-subheadline)',
+              fontWeight: 'var(--weight-medium)',
+              color: 'var(--text-primary)',
+              fontVariantNumeric: 'tabular-nums',
+              flex: 1,
+            }}>
+              {formatDuration(recordingElapsed)}
+            </span>
+
+            {/* Send recording button */}
+            <button
+              onClick={toggleRecording}
+              aria-label="Send voice message"
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                background: 'var(--accent)',
+                color: '#000',
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                transition: 'all 150ms var(--ease-smooth)',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="19" x2="12" y2="5" />
+                <polyline points="5 12 12 5 19 12" />
+              </svg>
+            </button>
+          </div>
+        ) : (
+          /* ── Normal input mode ────────────────────── */
+          <div style={{
+            display: 'flex',
+            alignItems: 'flex-end',
+            gap: 'var(--space-2)',
+            background: 'var(--fill-secondary)',
+            borderRadius: 'var(--radius-lg)',
+            padding: 'var(--space-2) var(--space-3)',
+            border: '1px solid var(--separator)',
+          }}>
+            {/* Attach button */}
+            <button
+              className="btn-ghost focus-ring"
+              aria-label="Attach file"
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                padding: 'var(--space-1)',
+                flexShrink: 0,
+                borderRadius: 'var(--radius-sm)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,audio/*,.pdf,.doc,.docx,.txt,.csv,.json,.zip"
+              multiple
+              style={{ display: 'none' }}
+              onChange={handleFileAttach}
+            />
+
+            {/* Textarea */}
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={`Message ${agent.name}...`}
+              rows={1}
+              disabled={isStreaming}
+              style={{
+                flex: 1,
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                resize: 'none',
+                color: 'var(--text-primary)',
+                fontSize: 'var(--text-subheadline)',
+                lineHeight: 'var(--leading-normal)',
+                maxHeight: 120,
+                minHeight: 24,
+                padding: '2px 0',
+                opacity: isStreaming ? 0.5 : 1,
+              }}
+              onInput={e => {
+                const target = e.target as HTMLTextAreaElement
+                target.style.height = 'auto'
+                target.style.height = Math.min(target.scrollHeight, 120) + 'px'
+              }}
+            />
+
+            {/* Send or Mic button */}
+            {showMic ? (
+              <button
+                className="focus-ring"
+                aria-label="Record voice message"
+                onClick={toggleRecording}
+                disabled={isStreaming}
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: '50%',
+                  background: 'var(--fill-tertiary)',
+                  color: 'var(--text-secondary)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 150ms var(--ease-smooth)',
+                  flexShrink: 0,
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                className="focus-ring"
+                onClick={() => sendMessage()}
+                disabled={!hasContent || isStreaming}
+                aria-label="Send message"
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: '50%',
+                  background: hasContent ? 'var(--accent)' : 'var(--fill-tertiary)',
+                  color: hasContent ? '#000' : 'var(--text-quaternary)',
+                  border: 'none',
+                  cursor: hasContent ? 'pointer' : 'default',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 16,
+                  fontWeight: 'var(--weight-bold)',
+                  transition: 'all 150ms var(--ease-smooth)',
+                  flexShrink: 0,
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="19" x2="12" y2="5" />
+                  <polyline points="5 12 12 5 19 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Hint */}
         <div style={{
@@ -811,7 +1133,7 @@ export function ConversationView({ agent, conversation, onUpdate, onBack }: Conv
           textAlign: 'center',
           marginTop: 'var(--space-1)',
         }}>
-          Enter to send &middot; Shift+Enter for newline
+          Enter to send &middot; Shift+Enter for newline &middot; Tap mic to record
         </div>
       </div>
     </div>

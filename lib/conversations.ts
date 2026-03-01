@@ -9,6 +9,9 @@ export interface MediaAttachment {
   url: string
   name?: string
   mimeType?: string
+  duration?: number
+  waveform?: number[]
+  size?: number
 }
 
 export interface Message {

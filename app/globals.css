@@ -642,6 +642,18 @@ body {
 .msg-user code { background: rgba(0,0,0,0.12) !important; color: #000 !important; }
 
 /* ============================================
+   Chat — Typing Dots
+   ============================================ */
+
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  animation: bounce-dot 1.2s ease-in-out infinite;
+}
+
+/* ============================================
    Reduced Motion
    ============================================ */
 
