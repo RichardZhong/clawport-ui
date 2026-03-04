@@ -155,8 +155,12 @@ async function main() {
     }
   }
 
+  // Support --cwd flag for CLI usage (clawport setup writes .env.local into the package dir)
+  const cwdFlag = process.argv.find((a) => a.startsWith('--cwd='))
+  const targetDir = cwdFlag ? cwdFlag.split('=')[1] : process.cwd()
+
   // Check if .env.local already exists
-  const envPath = resolve(process.cwd(), '.env.local')
+  const envPath = resolve(targetDir, '.env.local')
   if (existsSync(envPath)) {
     const overwrite = await ask(`  ${yellow('?')} .env.local already exists. Overwrite? (y/N) `)
     if (overwrite.toLowerCase() !== 'y') {

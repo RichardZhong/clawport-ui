@@ -41,7 +41,27 @@ export function GettingStartedSection() {
         ]}
       />
 
-      <SubHeading>Quick Start</SubHeading>
+      <SubHeading>Quick Start (npm)</SubHeading>
+      <CodeBlock title="terminal">
+        {`# Install globally
+npm install -g clawport-ui
+
+# Run the setup wizard (auto-detects your OpenClaw config)
+clawport setup
+
+# Start the dev server
+clawport dev`}
+      </CodeBlock>
+      <Callout type="warning">
+        If you get <InlineCode>EACCES: permission denied</InlineCode> or{" "}
+        <InlineCode>EEXIST</InlineCode> errors during install, your npm cache
+        has broken permissions (usually from a previous{" "}
+        <InlineCode>sudo npm install</InlineCode>). Fix it with:{" "}
+        <InlineCode>sudo chown -R $(whoami) ~/.npm</InlineCode> then retry.
+        See the Troubleshooting section for full details.
+      </Callout>
+
+      <SubHeading>Quick Start (from source)</SubHeading>
       <CodeBlock title="terminal">
         {`# Clone the repo
 git clone https://github.com/openclaw/clawport.git

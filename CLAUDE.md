@@ -10,6 +10,19 @@ npx tsc --noEmit     # Type-check (expect 0 errors)
 npx next build       # Production build
 ```
 
+### CLI (global install)
+
+```bash
+npm install -g clawport-ui
+clawport setup       # Auto-detect config, write .env.local into package dir
+clawport dev         # Start dev server
+clawport start       # Build + start production server
+clawport status      # Check gateway reachability + env config
+clawport help        # Show usage
+```
+
+The CLI resolves its own package root via `import.meta.url`, so all commands work regardless of the user's current working directory. Entry point: `bin/clawport.mjs`.
+
 ## Project Overview
 
 ClawPort is a Next.js 16 dashboard for managing OpenClaw AI agents. It provides an org chart (Org Map), direct agent chat with multimodal support, cron monitoring, and memory browsing. All AI calls route through the OpenClaw gateway -- no separate API keys needed.
@@ -187,11 +200,12 @@ Used by: `lib/memory.ts`, `lib/cron-runs.ts`, `lib/kanban/chat-store.ts`, `lib/c
 | `AgentAvatar.tsx` | Agent emoji/image avatar with optional background |
 | `DynamicFavicon.tsx` | Updates favicon based on portal emoji/icon settings |
 
-### Scripts
+### Scripts & CLI
 
 | File | Purpose |
 |------|---------|
-| `scripts/setup.mjs` | `npm run setup` -- auto-detects WORKSPACE_PATH, OPENCLAW_BIN, gateway token; writes `.env.local` |
+| `bin/clawport.mjs` | CLI entry point -- `clawport dev`, `clawport setup`, `clawport status`, etc. Resolves package root via `import.meta.url` |
+| `scripts/setup.mjs` | `npm run setup` / `clawport setup` -- auto-detects WORKSPACE_PATH, OPENCLAW_BIN, gateway token; writes `.env.local`. Accepts `--cwd=<path>` flag for CLI usage |
 
 ## Testing
 

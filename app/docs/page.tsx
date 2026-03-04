@@ -9,6 +9,7 @@ import { CronSystemSection } from "@/components/docs/CronSystemSection";
 import { ThemingSection } from "@/components/docs/ThemingSection";
 import { ComponentsSection } from "@/components/docs/ComponentsSection";
 import { TroubleshootingSection } from "@/components/docs/TroubleshootingSection";
+import { BestPracticesSection } from "@/components/docs/BestPracticesSection";
 
 /* ─── Section Definitions ──────────────────────────────────────── */
 
@@ -41,6 +42,13 @@ const SECTIONS: DocSectionDef[] = [
     emoji: "\u{1F916}",
     description: "Registry, hierarchy, customization",
     component: AgentsSection,
+  },
+  {
+    id: "best-practices",
+    label: "Best Practices",
+    emoji: "\u{1F3AF}",
+    description: "Hierarchy, memory, tools, naming",
+    component: BestPracticesSection,
   },
   {
     id: "api-reference",

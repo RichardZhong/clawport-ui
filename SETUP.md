@@ -15,12 +15,12 @@ This guide walks you through getting ClawPort running against your own OpenClaw 
 ## 1. Install ClawPort
 
 ```bash
-# Install from npm
-npm install clawport-ui
+# Install globally from npm
+npm install -g clawport-ui
 
 # Or clone the repo
-git clone https://github.com/openclaw/clawport.git
-cd clawport
+git clone https://github.com/JohnRiceML/clawport-ui.git
+cd clawport-ui
 npm install
 ```
 
@@ -31,6 +31,10 @@ npm install
 The fastest way is the auto-setup script:
 
 ```bash
+# If installed globally via npm
+clawport setup
+
+# Or if running from source
 npm run setup
 ```
 
@@ -123,6 +127,10 @@ Leave this running while you use ClawPort. If the gateway isn't running, chat an
 ## 4. Run ClawPort
 
 ```bash
+# If installed globally via npm
+clawport dev
+
+# Or if running from source
 npm run dev
 ```
 
@@ -250,6 +258,10 @@ Your `agents.json` should be an array of agent objects. Here's the minimal requi
 ## 6. Production Build
 
 ```bash
+# If installed globally via npm
+clawport start
+
+# Or if running from source
 npx next build
 npm start
 ```

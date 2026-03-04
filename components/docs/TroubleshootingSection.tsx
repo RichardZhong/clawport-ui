@@ -17,6 +17,71 @@ export function TroubleshootingSection() {
         Common issues and their solutions when running ClawPort.
       </Paragraph>
 
+      {/* ── npm install permission errors ──────────────────────── */}
+      <SubHeading>
+        EACCES / permission denied during npm install -g
+      </SubHeading>
+      <Paragraph>
+        If you see errors like <InlineCode>EACCES: permission denied</InlineCode>,{" "}
+        <InlineCode>EEXIST</InlineCode>, or{" "}
+        <InlineCode>Invalid response body while trying to fetch</InlineCode> when
+        running <InlineCode>npm install -g clawport-ui</InlineCode>, your npm
+        cache directory has broken permissions. This usually happens if{" "}
+        <InlineCode>npm install -g</InlineCode> was previously run with{" "}
+        <InlineCode>sudo</InlineCode>.
+      </Paragraph>
+      <Paragraph>
+        Fix it in three steps:
+      </Paragraph>
+      <NumberedList
+        items={[
+          <>
+            <strong style={{ color: "var(--text-primary)" }}>
+              Fix cache permissions
+            </strong>
+          </>,
+          <>
+            <strong style={{ color: "var(--text-primary)" }}>
+              Fix global node_modules permissions
+            </strong>
+          </>,
+          <>
+            <strong style={{ color: "var(--text-primary)" }}>
+              Retry the install
+            </strong>
+          </>,
+        ]}
+      />
+      <CodeBlock title="terminal">
+        {`# 1. Fix npm cache ownership
+sudo chown -R $(whoami) ~/.npm
+
+# 2. Fix global node_modules ownership (find your prefix first)
+npm prefix -g
+# Then fix permissions on that path, e.g.:
+sudo chown -R $(whoami) /usr/local/lib/node_modules
+sudo chown -R $(whoami) /usr/local/bin
+
+# 3. Retry without sudo
+npm install -g clawport-ui`}
+      </CodeBlock>
+      <Paragraph>
+        If that still fails, clear the cache entirely and retry:
+      </Paragraph>
+      <CodeBlock title="terminal">
+        {`npm cache clean --force
+npm install -g clawport-ui`}
+      </CodeBlock>
+      <Callout type="warning">
+        Never use <InlineCode>sudo npm install -g</InlineCode> -- it creates
+        root-owned files in your user's npm cache and global directories, which
+        causes permission errors on every future install. If your setup requires
+        sudo for global installs, consider using{" "}
+        <InlineCode>nvm</InlineCode> (Node Version Manager) instead, which
+        installs Node and global packages in your home directory with no
+        permission issues.
+      </Callout>
+
       {/* ── Issue 1 ────────────────────────────────────────────── */}
       <SubHeading>
         "Missing required environment variable: WORKSPACE_PATH"

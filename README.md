@@ -14,13 +14,22 @@ ClawPort is an open-source dashboard for managing, monitoring, and talking direc
 - [OpenClaw](https://openclaw.ai) installed and running
 - OpenClaw gateway started (`openclaw gateway run`)
 
-### Quick Start
+### Quick Start (npm)
 
 ```bash
-# Install from npm
-npx clawport-ui
+# Install globally
+npm install -g clawport-ui
 
-# Or clone the repo
+# Auto-detect your OpenClaw config
+clawport setup
+
+# Start the dev server
+clawport dev
+```
+
+### Quick Start (from source)
+
+```bash
 git clone https://github.com/JohnRiceML/clawport-ui.git
 cd clawport-ui
 npm install
@@ -261,10 +270,21 @@ npx next build       # Production build
 ## npm
 
 ```bash
-npm install clawport-ui
+npm install -g clawport-ui
+clawport help
 ```
 
 Published as [`clawport-ui`](https://www.npmjs.com/package/clawport-ui) on npm.
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `clawport dev` | Start the development server |
+| `clawport start` | Build and start the production server |
+| `clawport setup` | Auto-detect OpenClaw config and write `.env.local` |
+| `clawport status` | Check gateway reachability and current config |
+| `clawport help` | Show usage |
 
 ---
 
