@@ -8,7 +8,8 @@ vi.mock('fs', () => ({
 }))
 
 import { existsSync, readFileSync } from 'fs'
-import { loadPipelines, getPipelinesForJob, getAllPipelineJobNames } from './cron-pipelines'
+import { loadPipelines } from './cron-pipelines.server'
+import { getPipelinesForJob, getAllPipelineJobNames } from './cron-pipelines'
 
 const mockExistsSync = vi.mocked(existsSync)
 const mockReadFileSync = vi.mocked(readFileSync)

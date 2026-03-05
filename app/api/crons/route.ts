@@ -1,5 +1,5 @@
 import { getCrons } from '@/lib/crons'
-import { loadPipelines } from '@/lib/cron-pipelines'
+import { loadPipelines } from '@/lib/cron-pipelines.server'
 import { apiErrorResponse } from '@/lib/api-error'
 import { NextResponse } from 'next/server'
 

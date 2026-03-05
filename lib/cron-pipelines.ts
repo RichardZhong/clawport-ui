@@ -1,10 +1,7 @@
 /**
- * Dynamic pipeline loader — reads pipeline definitions from
- * $WORKSPACE_PATH/clawport/pipelines.json when available.
+ * Pipeline types and client-safe utilities.
+ * Server-only loader lives in cron-pipelines.server.ts.
  */
-
-import { existsSync, readFileSync } from 'fs'
-import { join } from 'path'
 
 export interface PipelineEdge {
   from: string
@@ -15,22 +12,6 @@ export interface PipelineEdge {
 export interface Pipeline {
   name: string
   edges: PipelineEdge[]
-}
-
-/** Load pipelines from workspace config. Returns [] if not configured. */
-export function loadPipelines(): Pipeline[] {
-  const workspacePath = process.env.WORKSPACE_PATH
-  if (!workspacePath) return []
-
-  const pipelinesPath = join(workspacePath, 'clawport', 'pipelines.json')
-  if (!existsSync(pipelinesPath)) return []
-
-  try {
-    const raw = readFileSync(pipelinesPath, 'utf-8')
-    return JSON.parse(raw) as Pipeline[]
-  } catch {
-    return []
-  }
 }
 
 /** Get all pipelines that include a specific job name. */
