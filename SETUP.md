@@ -6,9 +6,73 @@ This guide walks you through getting ClawPort running against your own OpenClaw 
 
 ## Prerequisites
 
-1. **Node.js 22+** -- [Download](https://nodejs.org). Verify with `node -v`.
-2. **OpenClaw** -- [Install OpenClaw](https://openclaw.ai) and make sure the CLI works: `openclaw --version`.
-3. **OpenClaw gateway running** -- ClawPort talks to the gateway at `localhost:18789`. Start it before launching the UI.
+- **Node.js 22+** -- [Download](https://nodejs.org). Verify with `node -v`.
+- **OpenClaw** -- installed and running (see below)
+
+---
+
+## 0. Setting Up OpenClaw
+
+ClawPort connects to [OpenClaw](https://openclaw.ai), an open-source, self-hosted AI assistant that runs locally on your machine. If you already have OpenClaw running, skip to [step 1](#1-install-clawport).
+
+### Install OpenClaw
+
+```bash
+# macOS / Linux
+curl -fsSL https://openclaw.ai/install.sh | bash
+
+# Or via npm (requires Node 22+)
+npm install -g openclaw
+```
+
+Windows: `iwr -useb https://openclaw.ai/install.ps1 | iex`
+
+Verify the install:
+
+```bash
+openclaw --version
+```
+
+### Run the Onboarding Wizard
+
+The onboarding wizard sets up your workspace, configures the gateway, and installs it as a background daemon:
+
+```bash
+openclaw onboard --install-daemon
+```
+
+This creates:
+
+| What | Where |
+|------|-------|
+| Config file | `~/.openclaw/openclaw.json` |
+| Workspace | `~/.openclaw/workspace/` |
+| Agent SOUL files | `~/.openclaw/workspace/agents/` |
+| Memory | `~/.openclaw/workspace/memory/` |
+| Credentials | `~/.openclaw/credentials/` |
+
+### Verify the Gateway
+
+The gateway is the local server that handles all AI operations. ClawPort talks to it at `localhost:18789`.
+
+```bash
+openclaw gateway status
+```
+
+You should see the gateway URL, port, and auth token. If the gateway isn't running:
+
+```bash
+openclaw gateway run
+```
+
+### Key Concepts
+
+- **Workspace** -- the directory where OpenClaw stores agent files, memory, and configuration. Default: `~/.openclaw/workspace`.
+- **Gateway** -- local server at `localhost:18789` that routes AI calls to Claude, GPT, or local models. Exposes an OpenAI-compatible HTTP endpoint and a WebSocket control plane.
+- **Agents** -- each agent has a `SOUL.md` defining its persona and a directory under `agents/` in your workspace.
+- **SOUL.md** -- the identity file for an agent. Contains its name, role, personality, and operating rules. ClawPort reads these to build the dashboard.
+
+For more detail, see the [OpenClaw documentation](https://docs.openclaw.ai/getting-started).
 
 ---
 
