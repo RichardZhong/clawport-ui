@@ -43,8 +43,12 @@ function exec(cmd) {
 // ---------------------------------------------------------------------------
 
 function detectWorkspacePath() {
-  const defaultPath = join(homedir(), '.openclaw', 'workspace')
-  if (existsSync(defaultPath)) return defaultPath
+  // Current OpenClaw layout: ~/.openclaw/agents/main/workspace
+  const agentPath = join(homedir(), '.openclaw', 'agents', 'main', 'workspace')
+  if (existsSync(agentPath)) return agentPath
+  // Legacy layout: ~/.openclaw/workspace
+  const legacyPath = join(homedir(), '.openclaw', 'workspace')
+  if (existsSync(legacyPath)) return legacyPath
   return null
 }
 
