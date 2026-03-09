@@ -44,8 +44,14 @@ describe('getModelPricing', () => {
 
   it('returns haiku pricing', () => {
     const p = getModelPricing('claude-haiku-4-5')
-    expect(p.inputPer1M).toBe(0.80)
-    expect(p.outputPer1M).toBe(4)
+    expect(p.inputPer1M).toBe(1)
+    expect(p.outputPer1M).toBe(5)
+  })
+
+  it('returns opus pricing', () => {
+    const p = getModelPricing('claude-opus-4-6')
+    expect(p.inputPer1M).toBe(5)
+    expect(p.outputPer1M).toBe(25)
   })
 
   it('returns default pricing for unknown model', () => {
@@ -207,7 +213,7 @@ describe('computeWeekOverWeek', () => {
 })
 
 describe('computeCacheSavings', () => {
-  it('estimates savings from cache tokens', () => {
+  it('estimates savings from cache tokens at 90% of input price', () => {
     const runCosts = toRunCosts([
       makeRun({ jobId: 'a', ts: 1000, model: 'claude-sonnet-4-6', usage: { input_tokens: 500, output_tokens: 200, total_tokens: 1000 } }),
     ])
@@ -215,8 +221,8 @@ describe('computeCacheSavings', () => {
     expect(runCosts[0].cacheTokens).toBe(300)
     const savings = computeCacheSavings(runCosts)
     expect(savings.cacheTokens).toBe(300)
-    // 300 tokens * $3/1M = $0.0009
-    expect(savings.estimatedSavings).toBeCloseTo(0.0009, 6)
+    // 300 tokens * $3/1M * 0.9 (cache reads cost 0.1x, so 90% saved) = $0.00081
+    expect(savings.estimatedSavings).toBeCloseTo(0.00081, 6)
   })
 
   it('returns zero when no cache tokens', () => {
@@ -336,6 +342,33 @@ describe('computeOptimizationInsights', () => {
     expect(anomalyInsight).toBeDefined()
   })
 
+  it('includes Batch API insight when runs exist', () => {
+    const runCosts: RunCost[] = Array.from({ length: 6 }, (_, i) => ({
+      ts: 1000 + i, jobId: 'a', model: 'claude-haiku-4-5', provider: 'anthropic',
+      inputTokens: 300, outputTokens: 200, totalTokens: 1000, cacheTokens: 500, minCost: 0.01,
+    }))
+    const jobCosts = computeJobCosts(runCosts)
+    const cacheSavings: CacheSavings = { cacheTokens: 3000, estimatedSavings: 0.01 }
+    const insights = computeOptimizationInsights(runCosts, jobCosts, [], cacheSavings, 0.06)
+    const batchInsight = insights.find(i => i.title.includes('Batch API'))
+    expect(batchInsight).toBeDefined()
+    expect(batchInsight!.description).toContain('50%')
+    expect(batchInsight!.projectedSavings).toBeCloseTo(0.03, 2) // 50% of 0.06
+  })
+
+  it('flags extended thinking when output greatly exceeds input', () => {
+    const runCosts: RunCost[] = Array.from({ length: 3 }, (_, i) => ({
+      ts: 1000 + i, jobId: 'thinker', model: 'claude-sonnet-4-6', provider: 'anthropic',
+      inputTokens: 500, outputTokens: 2000, totalTokens: 2500, cacheTokens: 0, minCost: 0.03,
+    }))
+    const jobCosts = computeJobCosts(runCosts)
+    const cacheSavings: CacheSavings = { cacheTokens: 0, estimatedSavings: 0 }
+    const insights = computeOptimizationInsights(runCosts, jobCosts, [], cacheSavings, 0.09)
+    const thinkingInsight = insights.find(i => i.title.includes('extended thinking'))
+    expect(thinkingInsight).toBeDefined()
+    expect(thinkingInsight!.description).toContain('effort')
+  })
+
   it('sorts insights by severity (critical first)', () => {
     const runCosts: RunCost[] = Array.from({ length: 6 }, (_, i) => ({
       ts: 1000 + i, jobId: 'a', model: 'claude-opus-4-6', provider: 'anthropic',
@@ -398,7 +431,7 @@ describe('computeOptimizationScore', () => {
 })
 
 describe('buildCostAnalysisPrompt', () => {
-  it('includes key metrics in prompt', () => {
+  it('includes key metrics and pricing reference in prompt', () => {
     const summary = computeCostSummary([
       makeRun({ jobId: 'daily-report', ts: 1000, usage: { input_tokens: 5000, output_tokens: 1000, total_tokens: 6000 } }),
     ])
@@ -409,6 +442,14 @@ describe('buildCostAnalysisPrompt', () => {
     expect(prompt).toContain('Biggest Savings Opportunity')
     expect(prompt).toContain('Cache Strategy')
     expect(prompt).toContain('Model Selection')
+    // Should include pricing reference table
+    expect(prompt).toContain('Pricing Reference')
+    expect(prompt).toContain('Opus 4.6')
+    expect(prompt).toContain('Batch API')
+    expect(prompt).toContain('50%')
+    // Should mention cache read/write costs
+    expect(prompt).toContain('Cache Read (0.1x)')
+    expect(prompt).toContain('Minimum cacheable tokens')
   })
 
   it('falls back to jobId when no name provided', () => {

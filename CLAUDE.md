@@ -5,7 +5,7 @@
 ```bash
 npm run setup        # Auto-detect OpenClaw config, write .env.local
 npm run dev          # Start dev server (Turbopack, port 3000)
-npm test             # Run all 624 tests via Vitest (25 suites)
+npm test             # Run all 627 tests via Vitest (25 suites)
 npx tsc --noEmit     # Type-check (expect 0 errors)
 npx next build       # Production build
 ```
@@ -182,9 +182,9 @@ GET /api/costs
 
 **AI Cost Analysis:** The page includes a collapsible AI analysis panel (same SSE streaming pattern as pipeline health check). `buildCostAnalysisPrompt()` generates a detailed prompt from the cost summary. An inline chat appears after the analysis completes for follow-up questions. Insight "Fix" buttons send targeted prompts to the inline chat.
 
-**Key files:** `lib/costs.ts` (all computation, 33 tests), `components/costs/CostsPage.tsx` (UI with optimization score, insights, AI analysis, daily bar chart, job table, model breakdown, anomaly alerts)
+**Key files:** `lib/costs.ts` (all computation, 36 tests), `components/costs/CostsPage.tsx` (UI with optimization score, insights, AI analysis, daily bar chart, job table, model breakdown, anomaly alerts)
 
-**Pricing:** Built-in table for Claude model variants (Opus, Sonnet, Haiku). Falls back to Sonnet pricing for unknown models. Prefix matching handles versioned model IDs.
+**Pricing (per 1M tokens):** Opus 4.6 $5/$25, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5. Cache reads 0.1x input, cache writes 1.25x (5-min TTL) or 2x (1-hr TTL). Batch API 50% discount. Falls back to Sonnet pricing for unknown models. Prefix matching handles versioned model IDs.
 
 ### Activity Console & Live Stream
 
@@ -337,7 +337,7 @@ Used by: `lib/memory.ts`, `lib/cron-runs.ts`, `lib/kanban/chat-store.ts`, `lib/c
 
 ## Testing
 
-25 test suites, 624 tests total. All in `lib/` directory.
+25 test suites, 627 tests total. All in `lib/` directory.
 
 ```bash
 npx vitest run                     # All tests

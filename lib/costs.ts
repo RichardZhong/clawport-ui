@@ -6,15 +6,22 @@ import type {
 
 // ── Pricing table (per 1M tokens) ────────────────────────────
 
+// Source: https://docs.anthropic.com/en/docs/about-claude/models (March 2026)
+// Cache read = 0.1x input, cache write (5min) = 1.25x input, cache write (1hr) = 2x input
 const PRICING: Record<string, ModelPricing> = {
+  'claude-opus-4-6':     { inputPer1M: 5, outputPer1M: 25 },
+  'claude-opus-4-5':     { inputPer1M: 5, outputPer1M: 25 },
   'claude-sonnet-4-6':   { inputPer1M: 3, outputPer1M: 15 },
   'claude-sonnet-4-5':   { inputPer1M: 3, outputPer1M: 15 },
-  'claude-haiku-4-5':    { inputPer1M: 0.80, outputPer1M: 4 },
-  'claude-opus-4-6':     { inputPer1M: 15, outputPer1M: 75 },
+  'claude-sonnet-4':     { inputPer1M: 3, outputPer1M: 15 },
+  'claude-haiku-4-5':    { inputPer1M: 1, outputPer1M: 5 },
   'claude-3-5-sonnet':   { inputPer1M: 3, outputPer1M: 15 },
   'claude-3-5-haiku':    { inputPer1M: 0.80, outputPer1M: 4 },
   'claude-3-haiku':      { inputPer1M: 0.25, outputPer1M: 1.25 },
 }
+
+// Cache read cost as a fraction of input price (0.1x = 90% savings)
+const CACHE_READ_MULTIPLIER = 0.1
 
 const DEFAULT_PRICING: ModelPricing = { inputPer1M: 3, outputPer1M: 15 }
 
@@ -189,7 +196,8 @@ export function computeCacheSavings(runCosts: RunCost[]): CacheSavings {
     if (rc.cacheTokens > 0) {
       cacheTokens += rc.cacheTokens
       const pricing = getModelPricing(rc.model)
-      estimatedSavings += (rc.cacheTokens * pricing.inputPer1M) / 1_000_000
+      // Cache reads cost 0.1x input price, so savings = 0.9x input price per cached token
+      estimatedSavings += (rc.cacheTokens * pricing.inputPer1M * (1 - CACHE_READ_MULTIPLIER)) / 1_000_000
     }
   }
   return { cacheTokens, estimatedSavings }
@@ -211,38 +219,42 @@ export function computeOptimizationInsights(
   let id = 0
 
   // 1. Cache utilization check
+  // Cache reads cost 0.1x input (90% savings). Cache writes cost 1.25x (5-min TTL) or 2x (1-hr TTL).
+  // Minimum cacheable tokens: Opus/Haiku 4,096; Sonnet 4.6 2,048; Sonnet 4.5/4/3.7 1,024.
   const totalInputTokens = runCosts.reduce((s, r) => s + r.inputTokens, 0)
   const cacheRatio = totalInputTokens > 0 ? cacheSavings.cacheTokens / (totalInputTokens + cacheSavings.cacheTokens) : 0
   if (cacheRatio < 0.1 && runCosts.length >= 5) {
-    // Low or no caching -- potential for 40-60% input savings
+    // Low or no caching -- potential for significant input savings
     const potentialSavings = totalCost * 0.3
     insights.push({
       id: `opt-${++id}`,
       severity: 'critical',
       title: 'Enable prompt caching',
-      description: `Only ${(cacheRatio * 100).toFixed(0)}% of input tokens are cached. Prompt caching can reduce input costs by 90% on cache hits. Configure cacheRetention: "short" (5-min TTL) in your OpenClaw agent config.`,
+      description: `Only ${(cacheRatio * 100).toFixed(0)}% of input tokens are cached. Cache reads cost 0.1x input price (90% savings). Write overhead is just 1.25x for 5-min TTL -- breaks even after 1 cache hit. Prompts must be 1,024-4,096+ tokens (model-dependent). Structure prompts: tools first, then system instructions, then messages.`,
       projectedSavings: potentialSavings,
-      action: `My prompt cache hit rate is only ${(cacheRatio * 100).toFixed(0)}%. Analyze my cron jobs and recommend which agents would benefit most from enabling prompt caching. Show me the specific config changes needed and projected savings.`,
+      action: `My prompt cache hit rate is only ${(cacheRatio * 100).toFixed(0)}%. Analyze my cron jobs and recommend which agents would benefit most from enabling prompt caching. Consider minimum token thresholds (Opus/Haiku need 4,096 tokens, Sonnet needs 1,024-2,048). Show specific config changes and projected savings. Recommend whether to use 5-min or 1-hour TTL based on my job schedules.`,
     })
   } else if (cacheRatio >= 0.1 && cacheRatio < 0.4 && runCosts.length >= 5) {
     insights.push({
       id: `opt-${++id}`,
       severity: 'warning',
       title: 'Improve cache hit rate',
-      description: `Cache hit rate is ${(cacheRatio * 100).toFixed(0)}%. Restructuring prompts with static content first (tools > system > messages) and using longer TTLs can push this to 60%+.`,
+      description: `Cache hit rate is ${(cacheRatio * 100).toFixed(0)}%. Structure prompts with static content first (tools > system > messages) so the prefix stays stable. Consider 1-hour TTL (2x write cost) for jobs that run infrequently -- breaks even after 2 cache hits. Target 60%+ cache ratio.`,
       projectedSavings: totalCost * 0.15,
-      action: `My cache hit rate is ${(cacheRatio * 100).toFixed(0)}%. How can I restructure my agent prompts to improve caching? What OpenClaw config changes should I make?`,
+      action: `My cache hit rate is ${(cacheRatio * 100).toFixed(0)}%. How can I restructure my agent prompts to improve caching? Should any jobs switch from 5-min to 1-hour TTL? Show the optimal prompt ordering (tools > system > dynamic content) for each agent.`,
     })
   }
 
   // 2. Model tiering opportunities
+  // Opus $5/$25, Sonnet $3/$15, Haiku $1/$5 per 1M tokens
+  // Opus is 1.67x Sonnet on input, 5x Haiku. Sonnet is 3x Haiku.
   const expensiveRuns = runCosts.filter(r =>
     EXPENSIVE_MODELS.some(m => r.model.startsWith(m))
   )
   if (expensiveRuns.length > 0) {
     const expensiveCost = expensiveRuns.reduce((s, r) => s + r.minCost, 0)
     const pct = totalCost > 0 ? (expensiveCost / totalCost * 100) : 0
-    // Estimate savings by switching to Sonnet pricing
+    // Estimate savings by switching to Sonnet pricing ($3/$15 vs $5/$25)
     const savingsIfDowngraded = expensiveRuns.reduce((s, r) => {
       const opusCost = r.minCost
       const sonnetCost = (r.inputTokens * 3 + r.outputTokens * 15) / 1_000_000
@@ -253,13 +265,14 @@ export function computeOptimizationInsights(
       id: `opt-${++id}`,
       severity: pct > 50 ? 'critical' : 'warning',
       title: 'Downgrade from Opus where possible',
-      description: `${expensiveRuns.length} runs used Opus (${pct.toFixed(0)}% of total cost). Opus costs 5x more than Sonnet. Evaluate which jobs truly need Opus-level reasoning.`,
-      projectedSavings: savingsIfDowngraded * 0.7, // conservative estimate
-      action: `${expensiveRuns.length} of my cron runs are using Opus, which costs 5x more than Sonnet. Analyze which jobs actually need Opus-level reasoning and which could be safely downgraded to Sonnet or Haiku. Give me specific model config changes.`,
+      description: `${expensiveRuns.length} runs used Opus (${pct.toFixed(0)}% of total cost). Opus is $5/$25 vs Sonnet at $3/$15 per 1M tokens. Reserve Opus for complex multi-step reasoning; Sonnet handles code generation, analysis, and agentic tool use well.`,
+      projectedSavings: savingsIfDowngraded * 0.7, // conservative -- not all jobs can be downgraded
+      action: `${expensiveRuns.length} of my cron runs are using Opus ($5/$25 per 1M tokens). Sonnet ($3/$15) handles most tasks well. Analyze which jobs actually need Opus-level reasoning (complex multi-step, big refactors, research) vs which could safely use Sonnet or Haiku. Give me specific model config changes.`,
     })
   }
 
   // 3. Economy model opportunity for small jobs
+  // Haiku 4.5 ($1/$5) is 3x cheaper than Sonnet ($3/$15) and 5x cheaper than Opus ($5/$25)
   const economyEligible = jobCosts.filter(j => {
     const runs = runCosts.filter(r => r.jobId === j.jobId)
     const avgOutput = runs.reduce((s, r) => s + r.outputTokens, 0) / (runs.length || 1)
@@ -273,9 +286,9 @@ export function computeOptimizationInsights(
       id: `opt-${++id}`,
       severity: 'info',
       title: `Switch ${economyEligible.length} lightweight jobs to Haiku`,
-      description: `Jobs with short outputs (${names}${economyEligible.length > 3 ? '...' : ''}) could use Haiku at ~75% less cost. Haiku handles classification, routing, and status checks well.`,
+      description: `Jobs with short outputs (${names}${economyEligible.length > 3 ? '...' : ''}) could use Haiku 4.5 ($1/$5 per 1M) -- 3x cheaper than Sonnet. Haiku excels at classification, routing, status checks, and high-volume processing.`,
       projectedSavings: savings,
-      action: `These jobs produce short outputs and may not need an expensive model: ${economyEligible.map(j => j.jobId).join(', ')}. For each job, evaluate if switching to Haiku would maintain quality. Give me the specific config changes.`,
+      action: `These jobs produce short outputs and may not need an expensive model: ${economyEligible.map(j => j.jobId).join(', ')}. For each job, evaluate if switching to Haiku 4.5 ($1/$5 per 1M tokens) would maintain quality. Give me the specific config changes.`,
     })
   }
 
@@ -297,6 +310,8 @@ export function computeOptimizationInsights(
   }
 
   // 5. High output-to-input ratio (verbose responses)
+  // Output costs 5x input across all Claude models ($15 vs $3 for Sonnet, $25 vs $5 for Opus, $5 vs $1 for Haiku)
+  // Extended thinking tokens are also billed as output and can be significant
   const totalOutputTokens = runCosts.reduce((s, r) => s + r.outputTokens, 0)
   const outputRatio = totalInputTokens > 0 ? totalOutputTokens / totalInputTokens : 0
   if (outputRatio > 1.5 && runCosts.length >= 5) {
@@ -309,13 +324,50 @@ export function computeOptimizationInsights(
       id: `opt-${++id}`,
       severity: 'warning',
       title: 'Output tokens exceed input',
-      description: `Output tokens are ${outputRatio.toFixed(1)}x input tokens. Output costs 5x more per token. Adding max_tokens limits or requesting concise responses can cut output costs significantly.`,
+      description: `Output is ${outputRatio.toFixed(1)}x input tokens. Output costs 5x more per token across all models. Set max_tokens limits, request concise responses, or use structured JSON output. Note: extended thinking tokens are billed as output -- use effort: "low" or "medium" for simple tasks.`,
       projectedSavings: excessOutputCost * 0.3,
-      action: `My agents are generating ${outputRatio.toFixed(1)}x more output tokens than input tokens, and output costs 5x more. How can I configure my agents to be more concise? Should I set max_tokens limits? Which jobs are the most verbose?`,
+      action: `My agents are generating ${outputRatio.toFixed(1)}x more output tokens than input tokens, and output costs 5x more per token. How can I reduce output? Should I set max_tokens limits? Are any jobs using extended thinking unnecessarily? Which jobs are most verbose? Consider switching to effort: "low" for simple tasks.`,
     })
   }
 
-  // 6. Healthy system acknowledgment
+  // 6. Batch API opportunity for cron jobs
+  // Batch API gives 50% discount on input + output, processes within 24 hours, no minimum volume
+  // Cron jobs are ideal candidates since they're already asynchronous
+  if (runCosts.length >= 3 && totalCost > 0.05) {
+    insights.push({
+      id: `opt-${++id}`,
+      severity: 'info',
+      title: 'Use Batch API for scheduled jobs',
+      description: `Batch API provides a flat 50% discount on all tokens with no minimum volume. Cron jobs that don't need real-time responses are ideal candidates. Stacks with prompt caching -- combined savings up to 95% on input costs.`,
+      projectedSavings: totalCost * 0.5,
+      action: `I have ${runCosts.length} cron runs. The Batch API offers a 50% discount on all tokens and processes within 24 hours. Which of my cron jobs could use the Batch API instead of real-time calls? How do I configure this in OpenClaw? Can I combine Batch API with prompt caching for maximum savings?`,
+    })
+  }
+
+  // 7. Extended thinking cost awareness
+  // Thinking tokens are billed as output (5x input price) and can be very large
+  // Check for jobs with unusually high output relative to their input
+  const highThinkingJobs = jobCosts.filter(j => {
+    return j.totalOutputTokens > j.totalInputTokens * 3 && j.runs >= 2
+  })
+  if (highThinkingJobs.length > 0) {
+    const names = highThinkingJobs.slice(0, 3).map(j => j.jobId).join(', ')
+    const thinkingExcessCost = highThinkingJobs.reduce((s, j) => {
+      // Estimate: output beyond 1:1 ratio may be thinking tokens
+      const excessOutput = Math.max(0, j.totalOutputTokens - j.totalInputTokens)
+      return s + (excessOutput * 15) / 1_000_000 * 0.3 // conservative at Sonnet rates
+    }, 0)
+    insights.push({
+      id: `opt-${++id}`,
+      severity: 'warning',
+      title: 'Review extended thinking usage',
+      description: `Jobs with 3x+ output-to-input ratio (${names}) may be using extended thinking heavily. Thinking tokens are billed as output (5x input price) and the full internal thinking is billed, not just the summary. Use effort: "low" or "medium" for simpler tasks.`,
+      projectedSavings: thinkingExcessCost,
+      action: `These jobs have very high output relative to input: ${highThinkingJobs.map(j => j.jobId).join(', ')}. Are they using extended thinking? If so, which ones could use effort: "low" or "medium" instead of "high"? For simple classification or routing tasks, disable thinking entirely. Show me the config changes.`,
+    })
+  }
+
+  // 8. Healthy system acknowledgment
   if (insights.length === 0) {
     insights.push({
       id: `opt-${++id}`,
@@ -323,7 +375,7 @@ export function computeOptimizationInsights(
       title: 'System is well-optimized',
       description: `Good cache utilization, appropriate model selection, and no anomalies detected. Keep monitoring for changes as your workload evolves.`,
       projectedSavings: null,
-      action: 'My cost optimization looks healthy. What advanced techniques could I explore next? Consider batch processing, context window limits, or prompt compression strategies.',
+      action: 'My cost optimization looks healthy. What advanced techniques could I explore next? Consider Batch API (50% discount), longer cache TTLs, context window truncation, or model routing based on task complexity.',
     })
   }
 
@@ -391,10 +443,20 @@ export function buildCostAnalysisPrompt(summary: CostSummary, jobNames: Record<s
 
   return `You are a cost optimization advisor for an AI agent pipeline system using Claude models via OpenClaw. Analyze the following cost data and provide actionable recommendations.
 
+## Pricing Reference (per 1M tokens)
+| Model | Input | Output | Cache Read (0.1x) | Cache Write 5-min (1.25x) | Cache Write 1-hr (2x) |
+|-------|-------|--------|-------------------|---------------------------|------------------------|
+| Opus 4.6 | $5 | $25 | $0.50 | $6.25 | $10 |
+| Sonnet 4.6 | $3 | $15 | $0.30 | $3.75 | $6 |
+| Haiku 4.5 | $1 | $5 | $0.10 | $1.25 | $2 |
+- Batch API: 50% discount on all tokens (no minimum, processed within 24h)
+- Extended thinking: billed as output tokens (full internal thinking, not summary)
+- Minimum cacheable tokens: Opus/Haiku 4,096; Sonnet 4.6 2,048; Sonnet 4.5 1,024
+
 ## Key Metrics
 - Total estimated cost: $${summary.totalCost.toFixed(2)}
 - This week: $${summary.weekOverWeek.thisWeek.toFixed(2)} (last week: $${summary.weekOverWeek.lastWeek.toFixed(2)})
-- Cache savings so far: $${summary.cacheSavings.estimatedSavings.toFixed(2)} (${summary.cacheSavings.cacheTokens} cache tokens)
+- Cache savings so far: $${summary.cacheSavings.estimatedSavings.toFixed(2)} (${summary.cacheSavings.cacheTokens} cache tokens, 90% savings on reads)
 - Optimization score: ${summary.optimizationScore.overall}/100
 - Anomalies: ${summary.anomalies.length}
 
@@ -414,11 +476,11 @@ ${anomalySummary}
 - Efficiency: ${summary.optimizationScore.efficiencyScore}/100
 
 Provide a concise assessment covering:
-1. **Biggest Savings Opportunity** -- the single highest-impact change
-2. **Cache Strategy** -- is caching configured well? What should change?
-3. **Model Selection** -- are expensive models being used where cheaper ones would work?
-4. **Anomaly Triage** -- any concerning spikes and what to do about them
-5. **Quick Wins** -- 2-3 config changes that can be made today
+1. **Biggest Savings Opportunity** -- the single highest-impact change with dollar estimate
+2. **Cache Strategy** -- is caching configured? Recommend TTL (5-min vs 1-hr), prompt structure (tools > system > messages), and minimum token thresholds
+3. **Model Selection** -- which jobs should use Opus vs Sonnet vs Haiku? Consider task complexity
+4. **Batch API** -- which cron jobs could use Batch API for 50% savings?
+5. **Quick Wins** -- 2-3 specific config changes that can be made today
 
 Be specific with job names and dollar amounts. Include OpenClaw config snippets where relevant. Keep it under 400 words.`
 }
