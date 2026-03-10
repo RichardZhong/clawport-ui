@@ -1043,10 +1043,19 @@ function healthScoreColor(score: number): string {
   return "var(--system-red)";
 }
 
-function HealthScoreCard({ health }: { health: MemoryHealthSummary }) {
+function HealthHero({
+  health,
+  stats,
+  status,
+}: {
+  health: MemoryHealthSummary;
+  stats: MemoryStats;
+  status: MemoryStatus;
+}) {
   const criticals = health.checks.filter((c) => c.severity === "critical").length;
   const warnings = health.checks.filter((c) => c.severity === "warning").length;
   const color = healthScoreColor(health.score);
+  const dotColor = status.indexed ? "var(--system-green)" : "var(--text-tertiary)";
 
   return (
     <div
@@ -1055,46 +1064,86 @@ function HealthScoreCard({ health }: { health: MemoryHealthSummary }) {
         border: "1px solid var(--separator)",
         borderRadius: "var(--radius-md)",
         padding: "var(--space-4)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "var(--space-4)",
+        flexWrap: "wrap",
       }}
     >
+      {/* Left: Health score + severity */}
+      <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-3)" }}>
+        <span
+          style={{
+            fontSize: 36,
+            fontWeight: "var(--weight-bold)",
+            color,
+            lineHeight: 1,
+          }}
+        >
+          {health.score}
+        </span>
+        <div>
+          <div
+            style={{
+              fontSize: "var(--text-footnote)",
+              fontWeight: "var(--weight-semibold)",
+              color: "var(--text-primary)",
+              lineHeight: 1.2,
+            }}
+          >
+            Health Score
+          </div>
+          <div
+            style={{
+              fontSize: "var(--text-caption1)",
+              color: "var(--text-tertiary)",
+              marginTop: 2,
+            }}
+          >
+            {criticals > 0 && (
+              <span style={{ color: "var(--system-red)" }}>
+                {criticals} critical
+              </span>
+            )}
+            {criticals > 0 && warnings > 0 && " \u00b7 "}
+            {warnings > 0 && (
+              <span style={{ color: "var(--system-orange)" }}>
+                {warnings} warning{warnings !== 1 ? "s" : ""}
+              </span>
+            )}
+            {criticals === 0 && warnings === 0 && "All clear"}
+          </div>
+        </div>
+      </div>
+
+      {/* Right: Stat pills */}
       <div
         style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-3)",
           fontSize: "var(--text-caption1)",
-          color: "var(--text-tertiary)",
-          fontWeight: "var(--weight-medium)",
-          marginBottom: "var(--space-1)",
+          color: "var(--text-secondary)",
+          flexWrap: "wrap",
         }}
       >
-        Health
-      </div>
-      <div
-        style={{
-          fontSize: "var(--text-title2)",
-          fontWeight: "var(--weight-bold)",
-          color,
-        }}
-      >
-        {health.score}
-      </div>
-      <div
-        style={{
-          fontSize: "var(--text-caption2)",
-          color: "var(--text-tertiary)",
-          marginTop: 2,
-        }}
-      >
-        {criticals > 0 && (
-          <span style={{ color: "var(--system-red)" }}>
-            {criticals} critical
-          </span>
-        )}
-        {criticals > 0 && warnings > 0 && " \u00b7 "}
-        {warnings > 0 && (
-          <span style={{ color: "var(--system-orange)" }}>
-            {warnings} warning{warnings !== 1 ? "s" : ""}
-          </span>
-        )}
-        {criticals === 0 && warnings === 0 && "All clear"}
+        <span>{stats.totalFiles} files</span>
+        <span style={{ color: "var(--text-tertiary)" }}>{"\u00b7"}</span>
+        <span>{formatBytes(stats.totalSizeBytes)}</span>
+        <span style={{ color: "var(--text-tertiary)" }}>{"\u00b7"}</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: dotColor,
+              flexShrink: 0,
+            }}
+          />
+          {status.indexed ? "Indexed" : "Not indexed"}
+        </span>
       </div>
     </div>
   );
@@ -2259,38 +2308,10 @@ export default function MemoryPage() {
                 className="overflow-y-auto h-full"
                 style={{ padding: "var(--space-4) var(--space-6) var(--space-6)" }}
               >
-                {/* Stat cards */}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(4, 1fr)",
-                    gap: "var(--space-3)",
-                    marginBottom: "var(--space-4)",
-                  }}
-                  className="overview-cards-grid"
-                >
-                  <FilesCard stats={stats!} />
-                  <SizeCard stats={stats!} />
-                  <IndexCard status={status!} />
-                  {health && <HealthScoreCard health={health} />}
-                </div>
-
-                {/* Timeline */}
-                {stats && (
+                {/* Health hero */}
+                {health && stats && status && (
                   <div style={{ marginBottom: "var(--space-4)" }}>
-                    <MemoryTimeline timeline={stats.dailyTimeline} />
-                  </div>
-                )}
-
-                {/* Health checks */}
-                {health && health.checks.length > 0 && (
-                  <div style={{ marginBottom: "var(--space-4)" }}>
-                    <HealthChecksList
-                      checks={health.checks}
-                      onCheckAction={rootAgent ? handleCheckAction : undefined}
-                      onViewFile={handleViewFile}
-                      onReindex={handleReindex}
-                    />
+                    <HealthHero health={health} stats={stats} status={status} />
                   </div>
                 )}
 
@@ -2560,10 +2581,22 @@ export default function MemoryPage() {
                   </div>
                 )}
 
-                {/* Stale daily logs */}
-                {health && health.staleDailyLogs.length > 0 && (
+                {/* Health checks */}
+                {health && health.checks.length > 0 && (
                   <div style={{ marginBottom: "var(--space-4)" }}>
-                    <StaleDailyLogsCard health={health} />
+                    <HealthChecksList
+                      checks={health.checks}
+                      onCheckAction={rootAgent ? handleCheckAction : undefined}
+                      onViewFile={handleViewFile}
+                      onReindex={handleReindex}
+                    />
+                  </div>
+                )}
+
+                {/* Timeline */}
+                {stats && (
+                  <div style={{ marginBottom: "var(--space-4)" }}>
+                    <MemoryTimeline timeline={stats.dailyTimeline} />
                   </div>
                 )}
 

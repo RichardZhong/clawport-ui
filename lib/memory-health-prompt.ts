@@ -195,6 +195,20 @@ Please:
 3. Explain how total size affects retrieval quality and embedding costs`
     }
 
+    case 'vector-search-disabled': {
+      return `Vector search is currently disabled. Agents can only access MEMORY.md directly -- they cannot semantically search your other memory files (evergreen docs, daily logs, topic files).
+
+${baseContext}
+
+OpenClaw's vector search lets agents find relevant memory chunks across all files using semantic similarity, not just keyword matching. Without it, agents miss context that isn't in MEMORY.md.
+
+Please:
+1. Explain what vector search does and why it matters for agent memory retrieval
+2. Show the config to enable it in openclaw.json (memorySearch.enabled: true, with recommended hybrid search weights)
+3. Tell the user to run "openclaw memory reindex" after enabling to build the initial index
+4. Mention that reindexing is needed after future memory edits too`
+    }
+
     case 'unindexed-vector': {
       return `Vector search is enabled in the configuration but no search index has been built. This means agents cannot use semantic search to find relevant memory content -- they can only access MEMORY.md directly.
 

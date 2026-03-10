@@ -222,6 +222,19 @@ function checkTotalMemorySize(stats: MemoryStats): MemoryHealthCheck | null {
   return null
 }
 
+function checkVectorSearchDisabled(config: MemoryConfig): MemoryHealthCheck | null {
+  if (config.memorySearch.enabled) return null
+
+  return {
+    id: 'vector-search-disabled',
+    severity: 'warning',
+    title: 'Vector search is disabled',
+    description: 'Agents can only read MEMORY.md directly. Enable vector search in openclaw.json so agents can semantically search all memory files.',
+    affectedFiles: null,
+    action: 'Enable memorySearch in openclaw.json and run "openclaw memory reindex" to build the search index.',
+  }
+}
+
 function checkUnindexedVectorSearch(config: MemoryConfig, status: MemoryStatus): MemoryHealthCheck | null {
   if (!config.memorySearch.enabled) return null
   if (status.indexed) return null
@@ -332,6 +345,7 @@ export function computeMemoryHealth(
     () => checkFileSizes(files),
     () => checkStaleDailyLogs(files, now),
     () => checkTotalMemorySize(stats),
+    () => checkVectorSearchDisabled(config),
     () => checkUnindexedVectorSearch(config, status),
     () => checkStaleIndex(config, status, files, now),
     () => checkStaleEvergreenFiles(files, now),
